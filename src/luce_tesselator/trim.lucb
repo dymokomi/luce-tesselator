@@ -7,6 +7,7 @@ from three import Vector3, PolygonMesh, MeshBuilder, invalid
 from luce_tesselator.recombine import recombine
 from luce_tesselator.improve import improve
 from luce_tesselator.grid import insert_grid
+from luce_tesselator.trim_predicates import side, intersects, inside_triangle, ray_crosses
 
 pub struct TrimPolygon:
     let reserved: u8 = 0
@@ -39,28 +40,23 @@ pub struct TrimPolygon:
             offsets[loop + 1] = offsets[loop] + (usize)sizes[loop]
         if offsets[sizes.length] != points.length:
             error(invalid, "trim loops do not describe every vertex")
-        var extent: f64 = 1.0
+        var extent: f64 = 0.0
         for point in points:
             if not point.is_finite():
                 error(invalid, "nonfinite trim point")
             extent = math.max(extent, point.subtract(points[0]).length())
             if math.abs(point.subtract(points[0]).dot(n)) > 0.000001:
                 error(invalid, "trim polygon is not planar")
-        # CAD UV domains may be long and narrow. A 1e-12 * whole-domain-area
-        # threshold erases valid small ears at the end of a long trim. Predicates
-        # use translated differences and a near-machine relative tolerance,
-        # bounded below by the polygon renderer's absolute area threshold.
-        let epsilon = extent * extent * 0.000000000001
-        # Boundary containment remains conservative, while valid tiny corner
-        # ears in long UV domains need a smaller positive-area threshold.
-        let ear_epsilon = math.max(0.000000000001, extent * extent * 0.000000000000001)
+        # Area accounting has squared-distance units. Topological predicates
+        # below instead use determinant signs, not a domain-sized proximity band.
+        let epsilon = math.max(1e-30,extent*extent*1e-14)
         # Reject touching/crossing boundaries before making weakly-simple bridges.
         for loop in 0..<sizes.length:
             let start = offsets[loop]
             let end = offsets[loop + 1]
             for a in start..<end:
                 let b = start + (a - start + 1) % (end - start)
-                if points[a].subtract(points[b]).length() < 0.000000001:
+                if same(points[a],points[b]):
                     error(invalid, "collapsed trim edge")
                 for other in loop..<sizes.length:
                     let os = offsets[other]
@@ -71,9 +67,9 @@ pub struct TrimPolygon:
                         let d = os + (c - os + 1) % (oe - os)
                         if loop == other and (a == c or a == d or b == c or b == d):
                             continue
-                        if loop == other and shared_endpoint_only(points[a], points[b], points[c], points[d], n, epsilon):
+                        if loop == other and shared_endpoint_only(points[a], points[b], points[c], points[d], n):
                             continue
-                        if intersects(points[a], points[b], points[c], points[d], n, epsilon):
+                        if intersects(points[a], points[b], points[c], points[d], n):
                             error(invalid, "trim loops cross or touch")
         var expected: f64 = 0.0
         for loop in 0..<sizes.length:
@@ -157,9 +153,9 @@ pub struct TrimPolygon:
                     var clear = true
                     let previous = points[path[(pi + length - 1) % length]]
                     let following = points[path[(pi + 1) % length]]
-                    let left = orientation(previous, b, a, n) >= -epsilon
-                    let right = orientation(b, following, a, n) >= -epsilon
-                    if not ((left and right) if orientation(previous, b, following, n) > epsilon else (left or right)):
+                    let left = side(previous,b,a,n) >= 0
+                    let right = side(b,following,a,n) >= 0
+                    if not ((left and right) if side(previous,b,following,n) > 0 else (left or right)):
                         continue
                     for original in 0..<sizes.length:
                         let os = offsets[original]
@@ -168,12 +164,12 @@ pub struct TrimPolygon:
                             let d = os + (c - os + 1) % (oe - os)
                             if c == hi or d == hi or c == path[pi] or d == path[pi]:
                                 continue
-                            if intersects(a, b, points[c], points[d], n, epsilon):
+                            if intersects(a, b, points[c], points[d], n):
                                 clear = false
                     for edge in 0..<length:
                         let c = path[edge]
                         let d = path[(edge + 1) % length]
-                        if c != path[pi] and d != path[pi] and intersects(a, b, points[c], points[d], n, epsilon):
+                        if c != path[pi] and d != path[pi] and intersects(a, b, points[c], points[d], n):
                             clear = false
                     let middle = a.add(b).multiply_scalar(0.5)
                     if not contains(points, offsets[0], offsets[1], middle, n):
@@ -204,6 +200,9 @@ pub struct TrimPolygon:
             discard(try mesh.point(point))
         var area: f64 = 0.0
         var scan: usize = 0
+        var candidates: i64 = 0
+        for at in 0..<length:
+            if eligible(points[path[(at+length-1)%length]],points[path[at]],points[path[(at+1)%length]],n): candidates += 1
         while length > 3:
             var clipped = false
             for step in 0..<length:
@@ -215,25 +214,28 @@ pub struct TrimPolygon:
                 let b = points[bi]
                 let c = points[ci]
                 let turn = orientation(a, b, c, n)
-                if turn <= ear_epsilon:
+                if not eligible(a,b,c,n):
                     continue
-                if length == 4 and orientation(points[path[(at + 1) % length]], points[path[(at + 2) % length]], points[path[(at + 3) % length]], n) <= ear_epsilon:
+                if length == 4 and not usable(points[path[(at + 1) % length]], points[path[(at + 2) % length]], points[path[(at + 3) % length]], n):
                     continue
-                let xmin = math.min(a.x, math.min(b.x, c.x)) - epsilon
-                let xmax = math.max(a.x, math.max(b.x, c.x)) + epsilon
-                let ymin = math.min(a.y, math.min(b.y, c.y)) - epsilon
-                let ymax = math.max(a.y, math.max(b.y, c.y)) + epsilon
-                let zmin = math.min(a.z, math.min(b.z, c.z)) - epsilon
-                let zmax = math.max(a.z, math.max(b.z, c.z)) + epsilon
+                # A rounded straight boundary can contain tiny positive turns.
+                # Do not consume the last healthy interior ear and strand all
+                # its sampled constraints in an unconditioned residual strip.
+                # Removing b changes only its two neighboring corners: retain
+                # a necessary next-ear condition in constant work per attempt.
+                # No boundary vertex is removed, snapped, or tolerance-welded.
+                let previous = points[path[(at+length-2)%length]]
+                let following = points[path[(at+2)%length]]
+                let remaining = candidates - 1 - (1 if eligible(previous,a,b,n) else 0) - (1 if eligible(b,c,following,n) else 0) + (1 if eligible(previous,a,c,n) else 0) + (1 if eligible(a,c,following,n) else 0)
+                if remaining == 0:
+                    continue
                 var blocked = false
                 for index in 0..<length:
                     let id = path[index]
                     if id == ai or id == bi or id == ci:
                         continue
                     let p = points[id]
-                    if p.x < xmin or p.x > xmax or p.y < ymin or p.y > ymax or p.z < zmin or p.z > zmax:
-                        continue
-                    if orientation(a, b, p, n) >= -epsilon and orientation(b, c, p, n) >= -epsilon and orientation(c, a, p, n) >= -epsilon:
+                    if inside_triangle(a,b,c,p,n):
                         blocked = true
                         break
                 if blocked:
@@ -243,13 +245,14 @@ pub struct TrimPolygon:
                 for index in at..<length - 1:
                     path[index] = path[index + 1]
                 length -= 1
+                candidates = remaining
                 scan = (at + length - 1) % length
                 clipped = true
                 break
             if not clipped:
                 error(invalid, "trim triangulation stalled; no boundary vertices were discarded")
         let tail = orientation(points[path[0]], points[path[1]], points[path[2]], n)
-        if tail <= ear_epsilon:
+        if not usable(points[path[0]],points[path[1]],points[path[2]],n):
             error(invalid, "trim triangulation has a degenerate final triangle")
         try triangle(&mesh, path[0], path[1], path[2])
         area += tail * 0.5
@@ -266,18 +269,29 @@ func triangle(mesh: MeshBuilder*, a: usize, b: usize, c: usize) -> !:
 func orientation(a: Vector3, b: Vector3, c: Vector3, n: Vector3) -> f64:
     return b.subtract(a).cross(c.subtract(a)).dot(n)
 
+# A positive topological ear can still be numerically unusable as a display
+# triangle. Prefer another legal diagonal, using that triangle's own extent
+# (not the whole trim domain) and the polygon engine's conditioning contract.
+func usable(a: Vector3, b: Vector3, c: Vector3, n: Vector3) -> bool:
+    let ab = b.subtract(a)
+    let ac = c.subtract(a)
+    return ab.cross(ac).dot(n) > math.max(1e-30,math.max(ab.dot(ab),ac.dot(ac))*1e-14)
+
+func eligible(a: Vector3, b: Vector3, c: Vector3, n: Vector3) -> bool:
+    return side(a,b,c,n) > 0 and usable(a,b,c,n)
+
 func same(a: Vector3, b: Vector3) -> bool:
     return a.x == b.x and a.y == b.y and a.z == b.z
 
-func shared_endpoint_only(a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3, epsilon: f64) -> bool:
+func shared_endpoint_only(a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3) -> bool:
     if same(a, c):
-        return math.abs(orientation(a, b, d, n)) > epsilon or b.subtract(a).dot(d.subtract(a)) <= 0.0
+        return side(a,b,d,n) != 0 or b.subtract(a).dot(d.subtract(a)) <= 0.0
     if same(a, d):
-        return math.abs(orientation(a, b, c, n)) > epsilon or b.subtract(a).dot(c.subtract(a)) <= 0.0
+        return side(a,b,c,n) != 0 or b.subtract(a).dot(c.subtract(a)) <= 0.0
     if same(b, c):
-        return math.abs(orientation(b, a, d, n)) > epsilon or a.subtract(b).dot(d.subtract(b)) <= 0.0
+        return side(b,a,d,n) != 0 or a.subtract(b).dot(d.subtract(b)) <= 0.0
     if same(b, d):
-        return math.abs(orientation(b, a, c, n)) > epsilon or a.subtract(b).dot(c.subtract(b)) <= 0.0
+        return side(b,a,c,n) != 0 or a.subtract(b).dot(c.subtract(b)) <= 0.0
     return false
 
 func loop_area(points: const Vector3[], start: usize, end: usize, n: Vector3) -> f64:
@@ -286,33 +300,11 @@ func loop_area(points: const Vector3[], start: usize, end: usize, n: Vector3) ->
         sum += orientation(points[start], points[at], points[start + (at - start + 1) % (end - start)], n) * 0.5
     return sum
 
-func on_segment(a: Vector3, b: Vector3, p: Vector3, n: Vector3, epsilon: f64) -> bool:
-    return math.abs(orientation(a, b, p, n)) <= epsilon and p.subtract(a).dot(p.subtract(b)) <= epsilon
-
-func intersects(a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3, epsilon: f64) -> bool:
-    let margin = math.sqrt(epsilon)
-    if math.max(a.x, b.x) + margin < math.min(c.x, d.x) or math.max(c.x, d.x) + margin < math.min(a.x, b.x) or math.max(a.y, b.y) + margin < math.min(c.y, d.y) or math.max(c.y, d.y) + margin < math.min(a.y, b.y) or math.max(a.z, b.z) + margin < math.min(c.z, d.z) or math.max(c.z, d.z) + margin < math.min(a.z, b.z):
-        return false
-    let ac = orientation(a, b, c, n)
-    let ad = orientation(a, b, d, n)
-    let ca = orientation(c, d, a, n)
-    let cb = orientation(c, d, b, n)
-    if ((ac > epsilon and ad < -epsilon) or (ac < -epsilon and ad > epsilon)) and ((ca > epsilon and cb < -epsilon) or (ca < -epsilon and cb > epsilon)):
-        return true
-    return on_segment(a, b, c, n, epsilon) or on_segment(a, b, d, n, epsilon) or on_segment(c, d, a, n, epsilon) or on_segment(c, d, b, n, epsilon)
-
 func contains(points: const Vector3[], start: usize, end: usize, point: Vector3, n: Vector3) -> bool:
-    let axis: i64 = 2 if math.abs(n.z) >= math.abs(n.x) and math.abs(n.z) >= math.abs(n.y) else (1 if math.abs(n.y) >= math.abs(n.x) else 0)
-    let px = point.x if axis != 0 else point.y
-    let py = point.y if axis == 2 else point.z
     var inside = false
     for at in start..<end:
         let a = points[at]
         let b = points[start + (at - start + 1) % (end - start)]
-        let ax = a.x if axis != 0 else a.y
-        let ay = a.y if axis == 2 else a.z
-        let bx = b.x if axis != 0 else b.y
-        let by = b.y if axis == 2 else b.z
-        if (ay > py) != (by > py) and px < ax + (py - ay) * (bx - ax) / (by - ay):
+        if ray_crosses(a,b,point,n):
             inside = not inside
     return inside

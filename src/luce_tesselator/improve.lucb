@@ -96,7 +96,9 @@ func should_flip(a: Vector3, b: Vector3, c: Vector3, d: Vector3, normal: Vector3
     let bb = bd.dot(bd)
     let cc = cd.dot(cd)
     let scale = math.max(aa, math.max(bb, cc))
-    let epsilon = math.max(0.000000000001, scale * 0.000000000001)
+    # Convexity has area units. A fixed world-space floor prevents legitimate
+    # flips on small CAD parts, leaving refinement to repeatedly split slivers.
+    let epsilon = math.max(1e-30, scale*1e-14)
     # Only a strictly convex union can exchange its interior diagonal.
     if a.subtract(c).cross(d.subtract(c)).dot(normal) <= epsilon or d.subtract(c).cross(b.subtract(c)).dot(normal) <= epsilon:
         return false

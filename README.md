@@ -32,6 +32,15 @@ before improving diagonals and recombining. Zero disables it. Shared boundary
 sampling remains the caller's responsibility; this routine never splits a
 boundary edge independently. Refinement is bounded to 8192 candidate cells.
 
+Trim intersections, ear membership and hole containment use dominant-plane
+orientation signs, with an ordinary floating-point filter and a bounded
+floating-expansion fallback for ambiguous binary64 determinants. Close points
+are not automatically touching or welded. These topology predicates are
+separate from a CAD reader's geometric fitting tolerance. Ear selection still
+requires locally conditioned display triangles; genuinely degenerate domains
+remain errors. The fallback assumes finite, normal-range products in the
+bounded mesh coordinate range, not arbitrary unbounded/subnormal inputs.
+
 Surface-grid sampling is uniform, not a guaranteed chord-error tolerance.
 
 `TrimGrid.clip(points, sizes, us, vs)` intersects a supplied UV grid with one

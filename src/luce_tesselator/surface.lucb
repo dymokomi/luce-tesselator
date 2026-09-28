@@ -193,22 +193,36 @@ pub func surface_normal_checked(points: const Vector3[], weights: const f64[], n
     var w: f64 = 0.0
     var wu: f64 = 0.0
     var wv: f64 = 0.0
+    # Derivatives are translation invariant. Accumulate in a local frame so
+    # a small patch far from the origin does not subtract large world moments.
+    let origin = points[first_u*(usize)nv+first_v]
     for iu in 0..<(usize)du + 1:
         for iv in 0..<(usize)dv + 1:
             let index = (first_u + iu) * (usize)nv + first_v + iv
             let weight = bu[iu] * bv[iv] * weights[index]
             let uweight = ud[iu] * bv[iv] * weights[index]
             let vweight = bu[iu] * vd[iv] * weights[index]
-            p = p.add(points[index].multiply_scalar(weight))
-            pu = pu.add(points[index].multiply_scalar(uweight))
-            pv = pv.add(points[index].multiply_scalar(vweight))
+            let relative = points[index].subtract(origin)
+            p = p.add(relative.multiply_scalar(weight))
+            pu = pu.add(relative.multiply_scalar(uweight))
+            pv = pv.add(relative.multiply_scalar(vweight))
             w += weight
             wu += uweight
             wv += vweight
     if w <= 0.0 or not math.is_finite(w): error(invalid, "invalid normal denominator")
     p = p.multiply_scalar(1.0 / w)
-    let n = pu.subtract(p.multiply_scalar(wu)).cross(pv.subtract(p.multiply_scalar(wv)))
-    return try n.normalized() if n.length() > 1e-20 else Vector3()
+    let a = pu.subtract(p.multiply_scalar(wu))
+    let b = pv.subtract(p.multiply_scalar(wv))
+    let al = a.length()
+    let bl = b.length()
+    if not math.is_finite(al) or not math.is_finite(bl): error(invalid,"nonfinite surface derivative")
+    if al == 0.0 or bl == 0.0: return Vector3()
+    # Normalize tangent magnitudes before crossing. A normal is a direction,
+    # not an area in model units or knot-domain units. Generic Vector3's fixed
+    # length cutoff rejected regular tiny patches and near-pole derivatives.
+    let n = a.multiply_scalar(1.0/al).cross(b.multiply_scalar(1.0/bl))
+    let length = n.length()
+    return n.multiply_scalar(1.0/length) if length > 1e-14 else Vector3()
 
 func derivatives(knots: const f64[], count: i64, degree: i64, parameter: f64, first: usize, values: f64[9]*):
     var lower: f64[9]
