@@ -3,8 +3,9 @@ import interop
 import memory
 import math
 from three import PolygonMesh, MeshBuilder, Vector3, invalid
+from luce_tesselator.constraints import TrimConstraints
 
-pub func insert_grid(source: interop.Reference[PolygonMesh], normal: Vector3, spacing: f64, second_spacing: f64 = 0.0) -> interop.Reference[PolygonMesh]!:
+pub func insert_grid(source: interop.Reference[PolygonMesh], normal: Vector3, spacing: f64, second_spacing: f64 = 0.0, constraints: TrimConstraints = TrimConstraints()) -> interop.Reference[PolygonMesh]!:
     if spacing == 0.0:
         return source.clone()
     if not math.is_finite(spacing) or spacing < 0.0:
@@ -66,6 +67,7 @@ pub func insert_grid(source: interop.Reference[PolygonMesh], normal: Vector3, sp
                 if ab <= epsilon or bc <= epsilon or ca <= epsilon:
                     let x = a if ab <= epsilon else (b if bc <= epsilon else c)
                     let y = b if ab <= epsilon else (c if bc <= epsilon else a)
+                    if constraints.contains(x,y): break
                     let opposite = c if ab <= epsilon else (a if bc <= epsilon else b)
                     var neighbor: i64 = -1
                     var other: i64 = -1
