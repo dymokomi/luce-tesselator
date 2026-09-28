@@ -32,6 +32,41 @@ before improving diagonals and recombining. Zero disables it. Shared boundary
 sampling remains the caller's responsibility; this routine never splits a
 boundary edge independently. Refinement is bounded to 8192 candidate cells.
 
+Trim intersections, ear membership and hole containment use dominant-plane
+orientation signs, with an ordinary floating-point filter and a bounded
+floating-expansion fallback for ambiguous binary64 determinants. Close points
+are not automatically touching or welded. These topology predicates are
+separate from a CAD reader's geometric fitting tolerance. Ear selection still
+requires locally conditioned display triangles; genuinely degenerate domains
+remain errors. The fallback assumes finite, normal-range products in the
+bounded mesh coordinate range, not arbitrary unbounded/subnormal inputs.
+
+Ear clipping avoids leaving a remainder with no conditioned convex corner.
+If it still stalls on a single loop, it may add one area-centroid interior seed,
+but only after every original boundary segment forms a positive, conditioned
+triangle to that point and the area is preserved. This kernel check rejects
+invisible spokes; holes never take this fallback. Boundary positions and edges
+remain exact. The seed is subsequently eligible for the ordinary lattice,
+diagonal-improvement and pairing steps. Diagonal guards are relative to local
+squared edge length, so ordinary model-unit changes do not disable flips.
+
+`triangulate_seams(points, sizes, normal, boundary_ids)` and
+`quadrangulate_seams(points, sizes, normal, boundary_ids, edge_size=0,
+second_spacing=0)` accept explicit nonnegative canonical boundary identities.
+A reversed coincident segment within one loop is legal only when both endpoints
+have matching identities and exact chart positions. Distinct periodic chart
+images remain separate. Mere proximity or equal positions with different IDs
+never authorize overlapping constraints. A bounded visible-diagonal partition
+can separate a retraced slit tip before ear clipping; it keeps every authored
+segment and does not insert arbitrary spokes through the domain.
+
+`TrimConstraints.build(points, ids, sizes)` records coincident seam constraints
+by stable input point index. Its owner calls `close()`; meshing stages borrow the
+table. `contains(a,b)` protects those segments from grid insertion, diagonal
+flips, quad pairing and caller refinement. The table is empty for ordinary
+boundaries, which are protected by one-face incidence. Callers must retain input
+point indices. This is not a general intersecting-constraint arrangement solver.
+
 Surface-grid sampling is uniform, not a guaranteed chord-error tolerance.
 
 `TrimGrid.clip(points, sizes, us, vs)` intersects a supplied UV grid with one
@@ -52,8 +87,9 @@ Limits: degree 1–8, 2–1,024 surface control points per direction (262,144 to
 control points, divisions 1–64. Invalid
 weights, knot counts and collapsed surface polygons are checked errors.
 Planar trims are bounded to 64 loops and 16,384 vertices. Exact shared-vertex
-junctions within one loop are supported; touching distinct loops and overlapping
-segments remain invalid. Regression tests include
+junctions within one loop are supported; touching distinct loops and unidentified
+overlapping segments remain invalid. Explicit retraced seams use the identity
+API above. Regression tests include
 a bilinear plane, rational quarter-cylinder/curve, multiple holes, invalid
 boundaries, conservative quad recombination, grid-crossing holes, oblique trims,
 oversized cut cells and rejection of unsplit trim crossings.
