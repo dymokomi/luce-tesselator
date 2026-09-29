@@ -1,5 +1,13 @@
 # luce-tesselator
 
+> **Archived (2026-09-28).** This package is merged into
+> [luce-cad](https://github.com/dymokomi/luce-cad) 0.2.0: the same NURBS
+> evaluation and trim/grid/recombine meshing live in `src/luce_cad/tessellation/`
+> and are exported as `tessellation` (`from tessellation import NurbsSurface,
+> TrimPolygon, TrimGrid, ...`), with these contract tests in luce-cad's runner.
+> Depend on `dymokomi/luce-cad` instead; this repository is read-only and the
+> package is no longer on the registry.
+
 Original **Luce Base** rational tensor-product B-spline evaluation and mesh
 tessellation. The requested package spelling is retained. Public export:
 `tesselator.NurbsSurface.tessellate(points, weights, nu, nv, degree_u, degree_v,
